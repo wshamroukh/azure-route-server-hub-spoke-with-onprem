@@ -1,7 +1,7 @@
 # RouteServer in HUB with NVA and two Spokes and onprem s2s vpn tunnel
 # variables
 rg=1rs
-location='uaenorth'
+location='centralindia'
 
 hub_vnet_name='hub'
 hub_vnet_address='10.1.0.0/16'
