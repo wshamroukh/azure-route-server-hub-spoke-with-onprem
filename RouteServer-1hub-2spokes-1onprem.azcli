@@ -53,9 +53,10 @@ cloudinit_file=~/cloudinit.txt
 cat <<EOF > $cloudinit_file
 #cloud-config
 runcmd:
-  - curl -s https://deb.frrouting.org/frr/keys.asc | sudo apt-key add -
-  - echo deb https://deb.frrouting.org/frr $(lsb_release -s -c) frr-stable | sudo tee -a /etc/apt/sources.list.d/frr.list
-  - sudo apt update && sudo apt install -y frr frr-pythontools strongswan
+  - curl -s https://deb.frrouting.org/frr/keys.gpg | sudo tee /usr/share/keyrings/frrouting.gpg > /dev/null
+  - echo deb [signed-by=/usr/share/keyrings/frrouting.gpg] https://deb.frrouting.org/frr \$(lsb_release -s -c) frr-stable | sudo tee -a /etc/apt/sources.list.d/frr.list
+  - sudo apt update && sudo apt install -y frr frr-pythontools
+  - sudo apt install -y strongswan tcptraceroute
   - sudo sed -i "/bgpd=no/ s//bgpd=yes/" /etc/frr/daemons
   - sudo service frr restart
   - touch /etc/strongswan.d/ipsec-vti.sh
@@ -154,14 +155,12 @@ rrun_time=$(($rfinish_time - $rstart_time))
 ((rminutes=rrun_time/60))
 ((rseconds=rrun_time%60))
 echo -e "\e[1;33mCreating Azure Route Server took $rminutes minutes and $rseconds seconds\e[0m"
+# Enable B2B on Route Server
 echo -e "\e[1;36mEnabling Branch-to-Branch setting on $hub_rs_name Azure Route Server...\e[0m"
-bstart_time=$(date +%s)
 az network routeserver update -n $hub_rs_name -g $rg --allow-b2b-traffic true -o none
-bfinish_time=$(date +%s)
-brun_time=$(($bfinish_time - $bstart_time))
-((bminutes=brun_time/60))
-((bseconds=brun_time%60))
-echo -e "\e[1;33mEnabling B2B on Azure Route Server took $bminutes minutes and $bseconds seconds\e[0m"
+# Set Routing Preference to VpnGateway
+echo -e "\e[1;36mSet Routing Preference to VpnGateway on $hub_rs_name Azure Route Server...\e[0m"
+az network routeserver update -n $hub_rs_name -g $rg --hub-routing-preference VpnGateway -o none
 
 # route server details
 echo -e "\e[1;36mGetting $hub_rs_name Route Sever details...\e[0m"
@@ -235,17 +234,25 @@ rm $frr_conf_file
 
 # Hub VPN GW
 echo -e "\e[1;36mDeploying $hub_gw_name VPN Gateway...\e[0m"
-az network public-ip create -g $rg -n $hub_gw_name-pubip1 --allocation-method Dynamic -o none
-az network public-ip create -g $rg -n $hub_gw_name-pubip2 --allocation-method Dynamic -o none
-gstart_time=$(date +%s)
+az network public-ip create -g $rg -n $hub_gw_name-pubip1 --allocation-method Static -o none
+az network public-ip create -g $rg -n $hub_gw_name-pubip2 --allocation-method Static -o none
 az network vnet-gateway create -g $rg -n $hub_gw_name --public-ip-addresses $hub_gw_name-pubip1 $hub_gw_name-pubip2 --vnet $hub_vnet_name --asn $hub_gw_asn --sku VpnGw1 --gateway-type Vpn --vpn-type RouteBased --no-wait
 
-# onprem gw
+# onprem g
 echo -e "\e[1;36mDeploying $onprem_gw_vm_name VM...\e[0m"
 az network public-ip create -n "$onprem_gw_vm_name-pubip" -g $rg --allocation-method Static --sku Basic -o none
 az network nic create -n "$onprem_gw_vm_name-ext-nic" --vnet-name $onprem_vnet_name -g $rg --subnet $onprem_gw_subnet_name --ip-forwarding true --public-ip-address "$onprem_gw_vm_name-pubip" -o none
 az network nic create -n "$onprem_gw_vm_name-int-nic" --vnet-name $onprem_vnet_name -g $rg --subnet $onprem_vm_subnet_name --ip-forwarding true -o none
 az vm create -n $onprem_gw_vm_name -g $rg --image $vm_image --nics $onprem_gw_vm_name-ext-nic $onprem_gw_vm_name-int-nic --os-disk-name "$onprem_gw_vm_name-disk" --size $vm_size --admin-username $admin_username --generate-ssh-keys --custom-data $cloudinit_file  --no-wait
+
+# onrepm gw details
+onprem_gw_pubip=$(az network public-ip show -g $rg -n $onprem_gw_vm_name-pubip --query ipAddress -o tsv) && echo $onprem_gw_vm_name: $onprem_gw_pubip
+onprem_gw_ext_private_ip=$(az network nic show -g $rg -n $onprem_gw_vm_name-ext-nic --query ipConfigurations[].privateIPAddress -o tsv) && echo $onprem_gw_vm_name external NIC IP: $onprem_gw_ext_private_ip
+onprem_gw_ext_gw_ip=$(first_ip $onprem_gw_subnet_address) && echo $onprem_gw_vm_name external NIC default gateway IP: $onprem_gw_ext_gw_ip
+
+# local gateway
+echo -e "\e[1;36mDeploying $onprem_gw_vm_name local gateway resource...\e[0m"
+az network local-gateway create -g $rg -n $onprem_gw_vm_name --gateway-ip-address $onprem_gw_pubip --asn $onprem_gw_asn --bgp-peering-address $onprem_gw_ext_private_ip --local-address-prefixes $onprem_vnet_address -o none
 
 # hub vm
 echo -e "\e[1;36mDeploying $hub_vm_name VM...\e[0m"
@@ -267,15 +274,6 @@ echo -e "\e[1;36mDeploying $onprem_vm_name VM...\e[0m"
 az network nic create -n "$onprem_vm_name-nic" --vnet-name $onprem_vnet_name -g $rg --subnet $onprem_vm_subnet_name -o none
 az vm create -n $onprem_vm_name -g $rg --image $vm_image --nics "$onprem_vm_name-nic" --os-disk-name "$onprem_vm_name-disk" --size $vm_size --admin-username $admin_username --generate-ssh-keys --no-wait
 
-# onrepm gw details
-onprem_gw_pubip=$(az network public-ip show -g $rg -n $onprem_gw_vm_name-pubip --query ipAddress -o tsv) && echo $onprem_gw_vm_name: $onprem_gw_pubip
-onprem_gw_ext_private_ip=$(az network nic show -g $rg -n $onprem_gw_vm_name-ext-nic --query ipConfigurations[].privateIPAddress -o tsv) && echo $onprem_gw_vm_name external NIC IP: $onprem_gw_ext_private_ip
-onprem_gw_ext_gw_ip=$(first_ip $onprem_gw_subnet_address) && echo $onprem_gw_vm_name external NIC default gateway IP: $onprem_gw_ext_gw_ip
-
-# local gateway
-echo -e "\e[1;36mDeploying $onprem_gw_vm_name local gateway resource...\e[0m"
-az network local-gateway create -g $rg -n $onprem_gw_vm_name --gateway-ip-address $onprem_gw_pubip --asn $onprem_gw_asn --bgp-peering-address $onprem_gw_ext_private_ip --local-address-prefixes $onprem_vnet_address -o none
-
 # onprem route table
 echo -e "\e[1;36mDeploying $onprem_vnet_name-rt Route Table and attaching it to $onprem_vm_subnet_name ...\e[0m"
 az network route-table create -n $onprem_vnet_name-rt -g $rg -o none
@@ -287,11 +285,6 @@ az network vnet subnet update --vnet-name $onprem_vnet_name -n $onprem_vm_subnet
 # waiting on vpn gw to finish deployment
 hub_gw_id=$(az network vnet-gateway show -g $rg -n $hub_gw_name --query id -o tsv)
 wait_until_finished $hub_gw_id
-gfinish_time=$(date +%s)
-grun_time=$(($gfinish_time - $gstart_time))
-((gminutes=grun_time/60))
-((gseconds=grun_time%60))
-echo -e "\e[1;33mCreating $hub_gw_name VPN Gateway took $gminutes minutes and $gseconds seconds\e[0m"
 
 # Getting VPN GW details
 echo -e "\e[1;36mGetting $hub_gw_name VPN Gateway details...\e[0m"
@@ -483,6 +476,7 @@ ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $hub_nva_pubip "sudo vtysh -
 echo -e "\e[1;36mChecking the advertised routes to $hub_nva_name VM...\e[0m"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $hub_nva_pubip "sudo vtysh -c 'show ip bgp neighbors $rs_ip1 advertised-routes'"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $hub_nva_pubip "sudo vtysh -c 'show ip bgp neighbors $rs_ip2 advertised-routes'"
+
 # checking the bgp details on the onprem gw
 echo -e "\e[1;36mChecking the BGP details on $onprem_gw_vm_name...\e[0m"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem_gw_pubip "sudo vtysh -c 'show bgp summary' && sudo vtysh -c 'show bgp all'"
@@ -492,6 +486,7 @@ ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem_gw_pubip "sudo vtysh
 echo -e "\e[1;36mChecking the advertised routes to $onprem_gw_vm_name...\e[0m"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem_gw_pubip "sudo vtysh -c 'show ip bgp neighbors $hub_gw_bgp_ip1 advertised-routes'"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem_gw_pubip "sudo vtysh -c 'show ip bgp neighbors $hub_gw_bgp_ip2 advertised-routes'"
+
 # show BGP route tables in RS
 # Learned routes by Azure Route Server
 echo -e "\e[1;36mListing learned routes by $hub_rs_name Azure Route Server...\e[0m"
@@ -504,7 +499,6 @@ az network routeserver peering list-advertised-routes -n $hub_nva_name-peering -
 
 # vnet gateway learned routes
 echo -e "\e[1;36mListing learned routes by $hub_gw_name VPN Gateway...\e[0m"
-#az network vpn-connection show -g $rg -n $hub_vnet_name-to-$onprem_vnet_name
 az network vnet-gateway list-learned-routes -g $rg -n $hub_gw_name -o table
 az network vnet-gateway list-advertised-routes -g $rg -n $hub_gw_name --peer $onprem_gw_ext_private_ip -o table
 
