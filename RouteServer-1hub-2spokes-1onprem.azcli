@@ -252,7 +252,7 @@ onprem_gw_ext_gw_ip=$(first_ip $onprem_gw_subnet_address) && echo $onprem_gw_vm_
 
 # local gateway
 echo -e "\e[1;36mDeploying $onprem_gw_vm_name local gateway resource...\e[0m"
-az network local-gateway create -g $rg -n $onprem_gw_vm_name --gateway-ip-address $onprem_gw_pubip --asn $onprem_gw_asn --bgp-peering-address $onprem_gw_ext_private_ip --local-address-prefixes $onprem_vnet_address -o none
+az network local-gateway create -g $rg -n $onprem_gw_vm_name --gateway-ip-address $onprem_gw_pubip --asn $onprem_gw_asn --bgp-peering-address $onprem_gw_ext_private_ip --local-address-prefixes $onprem_gw_ext_private_ip/32 -o none
 
 # hub vm
 echo -e "\e[1;36mDeploying $hub_vm_name VM...\e[0m"
