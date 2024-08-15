@@ -188,7 +188,7 @@ echo -e "\e[1;36mCreating BGP Config files for $hub_nva_name VM...\e[0m"
 # # frr.conf
 frr_conf_file=~/frr.conf
 cat <<EOF > $frr_conf_file
-frr version 8.1
+frr version 10.1
 frr defaults traditional
 hostname $hub_nva_name
 log syslog informational
@@ -423,7 +423,7 @@ sed -i "/\$hub_gw_bgp_ip2/ s//$hub_gw_bgp_ip2/" $ipsec_vti_file
 # frr.conf
 frr_conf_file=~/frr.conf
 cat <<EOF > $frr_conf_file
-frr version 8.1
+frr version 10.1
 frr defaults traditional
 hostname $onprem_gw_vm_name
 log syslog informational
